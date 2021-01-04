@@ -1,0 +1,425 @@
+---
+title: "Baymax"
+output: html_notebook
+---
+
+Here is a list of steps I would like you to consider in developing and illustrating your statistical model and the real data analysis:
+1. illustration of the dataset
+2. explain the overall features of the statistical model such as the role of the parameters and the inferential goals of the analysis
+3. illustrate the main inferential findings (Bayesian point and interval estimation, hypothesis testing)
+4. discuss one possible alternative statistical model and illustrate results of model comparison through DIC and/or marginal likelihood (see also Chapter 11 in Ntzoufras (2010))
+5. illustration of the features of the MCMC output, error control, convergence diagnostics
+The project should be submitted as a written report with enclosed figures and tables. You may want to consult the instructor or the tutor during project advances (using office hours or by email). When the project is complete and submitted you will be asked to illustrate it orally with a possible final face-to-face discussion.
+In evaluating the project I will consider as an extra bonus for final evaluation:
+• check the ability of a fully Bayesian analysis to recover model parameters with data simulated from the model
+• formal use of model checking diagnostics (see Chapter 10 in Ntzoufras (2010))
+• comparative analysis with frequentist inference
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load dependencies
+
+```{r}
+library(ggplot2)
+library(tidyr)
+library(purrr)
+library(corrplot)
+library(R2jags)
+```
+
+# Load dataset
+
+```{r}
+df = read.csv('datasets/pima_indians_diabetes.csv')
+head(df)
+```
+
+# 1 Exploratory Analysis of Data
+
+## 1.1 Data Summary
+
+```{r}
+df$Outcome = as.factor(df$Outcome)
+df$BloodPressure[df$BloodPressure == 0] = mean(df$BloodPressure[df$BloodPressure != 0])
+summary(df)
+```
+
+```{r}
+scaled_df = as.data.frame(scale(subset(df, select = -Outcome)))
+scaled_df$Outcome = df$Outcome
+summary(scaled_df)
+```
+
+## 1.2 Density Plots
+
+```{r}
+df %>%
+  keep(is.numeric) %>%
+  gather() %>%
+  ggplot(aes(x = value)) +
+    facet_wrap(~ key, scales = "free") +
+    geom_density()
+```
+
+
+## 1.3 Violin and Box plots
+
+```{r}
+g_dataset <- gather(df, key="key", value="value", -Outcome)
+
+ggplot(g_dataset, aes(x=Outcome, fill=Outcome)) +
+  geom_violin(aes(y=value)) +
+  facet_wrap(~ key, scales = "free") +
+  theme(legend.position="none") +
+  scale_fill_brewer(palette="Dark2")
+
+ggplot(g_dataset, aes(x=Outcome, fill=Outcome)) +
+  geom_boxplot(aes(y=value)) +
+  facet_wrap(~ key, scales = "free") +
+  theme(legend.position="none") +
+  scale_fill_brewer(palette="Dark2")
+```
+
+# 1.4 Correlation Plots
+
+```{r}
+df %>% subset(select=-Outcome) %>% pairs()
+```
+
+
+
+```{r}
+correlations = cor(df %>% subset(select=-Outcome))
+corrplot(correlations, type="upper", method="ellipse", tl.pos="d")
+corrplot(correlations, type="lower", method="number", col="black", 
+         add=TRUE, diag=FALSE, tl.pos="n", cl.pos="n")
+```
+
+
+# 2 Models
+
+```{r}
+dataset = df
+y.data = list( y=(dataset$Outcome %>% as.character() %>% as.numeric()),
+               Pregnancies=dataset$Pregnancies,
+               Glucose=dataset$Glucose,
+               BloodPressure=dataset$BloodPressure,
+               SkinThickness=dataset$SkinThickness,
+               Insulin=dataset$Insulin,
+               BMI=dataset$BMI,
+               DiabetesPedigreeFunction=dataset$DiabetesPedigreeFunction,
+               Age=dataset$Age,
+               n=nrow(dataset))
+
+params = c('age', 'bmi', 'bp', 'dpf', 'glucose', 'insulin', 'intercept', 'pregnancies', 'st')
+
+logit_model = "model{
+    # Likelihood
+    for (i in 1:n) {
+      y[i] ~ dbern(p[i])
+      logit(p[i]) <- age*Age[i] + bmi*BMI[i] + bp*BloodPressure[i] + dpf*DiabetesPedigreeFunction[i] + glucose*Glucose[i] + insulin*Insulin[i] + intercept + pregnancies*Pregnancies[i] + st*SkinThickness[i]
+    }
+
+    # Prior
+    age ~ dnorm(0, 1E-6)
+    bmi ~ dnorm(0, 1E-6)
+    bp ~ dnorm(0, 1E-6)
+    dpf ~ dnorm(0, 1E-6)
+    glucose ~ dnorm(0, 1E-6)
+    insulin ~ dnorm(0, 1E-6)
+    intercept ~ dnorm(0, 1E-6)
+    pregnancies ~ dnorm(0, 1E-6)
+    st ~ dnorm(0, 1E-6)
+  }
+"
+
+probit_model = "model{
+    # Likelihood
+    for (i in 1:n) {
+      y[i] ~ dbern(p[i])
+      probit(p[i]) <- age*Age[i] + bmi*BMI[i] + bp*BloodPressure[i] + dpf*DiabetesPedigreeFunction[i] + glucose*Glucose[i] + insulin*Insulin[i] + intercept + pregnancies*Pregnancies[i] + st*SkinThickness[i]
+    }
+
+    # Prior
+    age ~ dnorm(0, 1E-6)
+    bmi ~ dnorm(0, 1E-6)
+    bp ~ dnorm(0, 1E-6)
+    dpf ~ dnorm(0, 1E-6)
+    glucose ~ dnorm(0, 1E-6)
+    insulin ~ dnorm(0, 1E-6)
+    intercept ~ dnorm(0, 1E-6)
+    pregnancies ~ dnorm(0, 1E-6)
+    st ~ dnorm(0, 1E-6)
+  }
+"
+```
+
+
+## 2.1 Logit Model
+
+### 2.1.1 Bayesian approach
+
+?? relationship between selection of prior distribution and normalization of data
+
+```{r}
+logit_mod = jags.model(textConnection(logit_model), data=y.data, n.chains=3)
+update(logit_mod, 5e2)
+logit_sim1 = coda.samples(model=logit_mod,
+                        variable.names=params,
+                        n.iter=5e2)
+logit_sim1_combined = as.mcmc(do.call(rbind, logit_sim1))
+```
+
+```{r}
+plot(logit_sim1, density=FALSE,trace=TRUE)
+plot(logit_sim1, density=TRUE,trace=FALSE)
+autocorr.plot(logit_sim1_combined, lag.max = 500)
+```
+
+```{r}
+effectiveSize(logit_sim1_combined)
+gelman.diag(logit_sim1)
+gelman.plot(logit_sim1)
+```
+
+```{r}
+# geweke.diag(mod1_sim) # sample mean differnce of clipped segments of stationary distribution
+# gelman.diag(mod1_sim, autoburnin=FALSE) # requires at least two chains
+# raftery.diag(mod1_sim1) # run length diagnostic for determining q quantile estimate with error margin r and probability p
+# heidel.diag(mod1_sim)
+```
+
+```{r}
+logit_sim2 = coda.samples(model=logit_mod,
+                        variable.names=params,
+                        n.iter=5e2)
+logit_sim2_combined = as.mcmc(do.call(rbind, logit_sim1))
+```
+
+```{r}
+plot(logit_sim2, density=FALSE,trace=TRUE)
+plot(logit_sim2, density=TRUE,trace=FALSE)
+autocorr.plot(logit_sim2_combined, lag.max = 500)
+```
+
+```{r}
+effectiveSize(logit_sim2_combined)
+gelman.diag(logit_sim2)
+gelman.plot(logit_sim2)
+```
+
+
+```{r}
+logit_sum1 = summary(logit_sim2)
+```
+
+### 2.1.2 Frequentist 
+
+```{r}
+logit_freq = glm(Outcome ~ ., data = df, family = binomial(link = 'logit'))
+logit_sum2 = summary(logit_freq)
+```
+
+### 2.1.3 Comparison between Bayesian and Frequentist Approach
+
+```{r}
+logit_sum1$statistics
+```
+
+```{r}
+logit_sum2$coefficients
+```
+
+## 2.2 Probit Model
+
+### 2.2.1 Bayesian Approach
+
+
+```{r}
+probit_mod = jags.model(textConnection(probit_model), data=y.data, n.chains=3)
+update(probit_mod, 5e2)
+probit_sim1 = coda.samples(model=probit_mod,
+                        variable.names=params,
+                        n.iter=5e2)
+probit_sim1_combined = as.mcmc(do.call(rbind, probit_sim1))
+```
+
+```{r}
+plot(probit_sim1, density=FALSE,trace=TRUE)
+plot(probit_sim1, density=TRUE,trace=FALSE)
+autocorr.plot(probit_sim1_combined, lag.max=300)
+```
+
+```{r}
+effectiveSize(probit_sim1_combined)
+gelman.diag(probit_sim1)
+gelman.plot(probit_sim1)
+```
+
+
+```{r}
+probit_sim2 = coda.samples(model=probit_mod,
+                        variable.names=params,
+                        n.iter=5e2)
+probit_sim2_combined = as.mcmc(do.call(rbind, probit_sim2))
+```
+
+```{r}
+plot(probit_sim2, density=FALSE,trace=TRUE)
+plot(probit_sim2, density=TRUE,trace=FALSE)
+autocorr.plot(probit_sim2, lag.max=200)
+```
+
+```{r}
+effectiveSize(probit_sim2_combined)
+gelman.diag(probit_sim2)
+gelman.plot(probit_sim2)
+```
+```{r}
+probit_sim2_sum = summary(probit_sim2)
+```
+
+
+### 2.2.2 Frequentist Approach
+
+```{r}
+probit_freq = glm(Outcome ~ ., data = df, family = binomial(link = 'probit'))
+probit_freq_sum = summary(probit_freq)
+```
+
+### 2.2.3 Comparison between Bayesian and Frequentist Approach
+
+```{r}
+probit_sim2_sum$statistics
+```
+
+```{r}
+probit_freq$coefficients
+```
+
+## 2.3 Model Comparison with DIC
+
+# 3. Feature Recovery with simulated data
+
+## Creating simulated data
+
+```{r}
+dataset = scaled_df
+y.data = list( Pregnancies=dataset$Pregnancies,
+               Glucose=dataset$Glucose,
+               BloodPressure=dataset$BloodPressure,
+               SkinThickness=dataset$SkinThickness,
+               Insulin=dataset$Insulin,
+               BMI=dataset$BMI,
+               DiabetesPedigreeFunction=dataset$DiabetesPedigreeFunction,
+               Age=dataset$Age,
+               n=nrow(dataset))
+```
+
+
+```{r}
+dummy_df = subset(scaled_df, select=-Outcome)
+columns = colnames(dummy_df)
+X = as.matrix(dummy_df[columns])
+
+beta = rnorm(9, mean = 0, sd = 1)
+names(beta) = c('Intercept', columns)
+
+Y = beta[1] + X %*% beta[2:9]
+
+LogitOutcome = c()
+ProbitOutcome = c()
+
+for (y in Y) {
+  LogitOutcome = c(LogitOutcome, rbern(1, inv.logit(y)))
+  ProbitOutcome = c(ProbitOutcome, rbern(1, pnorm(y)))
+}
+```
+
+
+## 3.1 Logit Model
+
+```{r}
+y.data$y = LogitOutcome
+
+logit_mod = jags.model(textConnection(logit_model), data=y.data, n.chains=3)
+update(logit_mod, 5e2)
+logit_sim3 = coda.samples(model=logit_mod,
+                        variable.names=params,
+                        n.iter=5e2)
+logit_sim3_combined = as.mcmc(do.call(rbind, logit_sim3))
+```
+
+```{r}
+beta
+summary(logit_sim3_combined)
+```
+
+
+```{r}
+plot(logit_sim3, density=FALSE,trace=TRUE)
+plot(logit_sim3, density=TRUE,trace=FALSE)
+autocorr.plot(logit_sim3)
+```
+
+```{r}
+gelman.diag(logit_sim3)
+gelman.plot(logit_sim3)
+```
+
+
+## 3.2 Probit Model
+
+```{r}
+y.data$y = ProbitOutcome
+
+probit_mod = jags.model(textConnection(probit_model), data=y.data, n.chains=3)
+update(probit_mod, 1e3)
+probit_sim3 = coda.samples(model=probit_mod,
+                        variable.names=params,
+                        n.iter=1e3)
+probit_sim3_combined = as.mcmc(do.call(rbind, probit_sim3))
+```
+
+```{r}
+beta
+summary(probit_sim3_combined)
+```
+
+```{r}
+plot(probit_sim3, density=FALSE,trace=TRUE)
+plot(probit_sim3, density=TRUE,trace=FALSE)
+autocorr.plot(probit_sim3)
+```
+
+```{r}
+gelman.diag(probit_sim3)
+gelman.plot(probit_sim3)
+```
+
+## 3.3 Comparison
+
+
+```{r}
+# geweke.plot(mod1_sim) # sample mean differnce of clipped segments of stationary distribution
+# gelman.diag(mod1_sim, autoburnin=FALSE) # requires at least two chains
+# raftery.diag(mod1_sim) # run length diagnostic for determining q quantile estimate with error margin r and probability p
+# heidel.diag(mod1_sim)
+```
+
+
+```{r}
+# summary(as.mcmc(mod1_csim))
+# heidel.diag(mod1_sim)
+# gelman.diag(mod1_sim)
+# gelman.plot(mod1_sim)
+# autocorr.diag(mod1_sim)
+# autocorr.plot(mod1_sim[1])
+# autocorr.plot(mod1_sim[2])
+# effectiveSize(mod1_sim)
+# geweke.diag(mod1_sim )
+```
+
